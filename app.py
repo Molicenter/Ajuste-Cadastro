@@ -29,20 +29,14 @@ def init_gsheets():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    # Puxando as credenciais do Google do st.secrets
+    # Ajustado para buscar no bloco [connections.gsheets] que você já tem configurado
     credentials = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
+        st.secrets["connections"]["gsheets"],
         scopes=scopes
     )
     client = gspread.authorize(credentials)
     # Abre a planilha pelo nome exato
     return client.open("Ajuste_Cadastro").sheet1
-
-try:
-    sheet = init_gsheets()
-except Exception as e:
-    st.error(f"Erro ao conectar com o Google Sheets: {e}")
-    st.stop()
 
 # --- Funções ---
 def buscar_produto(codigo):

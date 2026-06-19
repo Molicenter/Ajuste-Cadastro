@@ -11,13 +11,16 @@ st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layou
 # --- Conexão com o Banco de Dados (PostgreSQL) ---
 @st.cache_resource
 def init_postgres():
-    return psycopg2.connect(**st.secrets["postgres"])
-
-try:
-    conn_pg = init_postgres()
-except Exception as e:
-    st.error(f"Erro ao conectar com o banco de dados: {e}")
-    st.stop()
+    # Acessando o bloco exato que você criou nos Secrets
+    db_secrets = st.secrets["connections"]["banco_erp"]
+    
+    return psycopg2.connect(
+        host=db_secrets["host"],
+        port=db_secrets["port"], 
+        dbname=db_secrets["database"], # Mapeando o seu 'database'
+        user=db_secrets["username"],   # Mapeando o seu 'username'
+        password=db_secrets["password"]
+    )
 
 # --- Conexão com o Google Sheets ---
 @st.cache_resource

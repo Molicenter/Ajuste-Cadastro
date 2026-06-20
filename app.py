@@ -228,17 +228,24 @@ st.divider()
 # =====================================================================
 st.subheader("📋 Registros Validados (Aba 'Finalizado')")
 try:
-    # AQUI CORRIGIMOS O ERRO DE CABEÇALHOS DUPLICADOS/VAZIOS NO PANDAS
     dados_planilha = sheet_finalizado.get_all_values()
     
-    if len(dados_planilha) > 1: # Verifica se tem cabeçalho e pelo menos 1 linha de dados
-        # Cria o dataframe manualmente usando a primeira linha como coluna
-        df = pd.DataFrame(dados_planilha[1:], columns=dados_planilha[0])
+    if len(dados_planilha) > 1: 
+        # Pega os cabeçalhos da primeira linha
+        cabecalhos = dados_planilha[0]
+        
+        # Truque de segurança: se alguma coluna estiver sem título no Sheets, 
+        # dá um nome genérico para o Pandas não travar a tela com erro
+        cabecalhos_seguros = [col if col.strip() != "" else f"Coluna_Sem_Nome_{i}" for i, col in enumerate(cabecalhos)]
+        
+        # Cria o dataframe com os cabeçalhos seguros
+        df = pd.DataFrame(dados_planilha[1:], columns=cabecalhos_seguros)
         st.dataframe(df, use_container_width=True, hide_index=True)
+        
     elif len(dados_planilha) == 1:
         st.info("Nenhum registro finalizado encontrado ainda.")
     else:
-        st.warning("A aba 'Finalizado' está vazia, adicione os nomes das colunas na linha 1.")
+        st.warning("A aba 'Finalizado' está vazia. Adicione os cabeçalhos na linha 1.")
         
 except Exception as e:
     st.error(f"Não foi possível carregar o histórico finalizado. Detalhes: {e}")

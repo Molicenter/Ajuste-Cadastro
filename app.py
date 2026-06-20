@@ -8,15 +8,6 @@ import pandas as pd
 # --- Configuração da Página ---
 st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layout="wide")
 
-# --- Variáveis de Estado (Session State) ---
-# Necessário para controlar o fluxo de 2 etapas (Gerente -> Responsável)
-if 'aguardando_validacao' not in st.session_state:
-    st.session_state.aguardando_validacao = False
-if 'produto_atual' not in st.session_state:
-    st.session_state.produto_atual = None
-if 'obs_gerente' not in st.session_state:
-    st.session_state.obs_gerente = ""
-
 # --- Conexão com o Banco de Dados (PostgreSQL) ---
 @st.cache_resource
 def init_postgres():
@@ -36,6 +27,7 @@ except Exception as e:
     st.stop()
 
 # --- Conexão com o Google Sheets ---
+# ATUALIZADO: Agora conecta e retorna as duas abas separadamente
 @st.cache_resource
 def init_gsheets():
     scopes = [
@@ -47,15 +39,20 @@ def init_gsheets():
         scopes=scopes
     )
     client = gspread.authorize(credentials)
-    return client.open("Ajuste_Cadastro").sheet1
+    planilha = client.open("Ajuste_Cadastro")
+    
+    # Abre as duas abas
+    aba_gerente = planilha.worksheet("Gerente")
+    aba_finalizado = planilha.worksheet("Finalizado")
+    return aba_gerente, aba_finalizado
 
 try:
-    sheet = init_gsheets()
+    sheet_gerente, sheet_finalizado = init_gsheets()
 except Exception as e:
-    st.error(f"Erro ao conectar com o Google Sheets: {e}")
+    st.error(f"Erro ao conectar com as abas do Google Sheets. Verifique se as abas 'Gerente' e 'Finalizado' existem com esses nomes exatos. Detalhes: {e}")
     st.stop()
 
-# --- Funções de Banco e Planilha ---
+# --- Funções de Banco ---
 def buscar_produto(codigo):
     with conn_pg.cursor(cursor_factory=RealDictCursor) as cur:
         query = """
@@ -72,9 +69,6 @@ def buscar_produto(codigo):
         cur.execute(query, (codigo,))
         return cur.fetchone()
 
-def salvar_no_sheets(dados):
-    sheet.append_row(dados)
-
 # --- Interface do Usuário ---
 st.title("📦 Validação de Produtos")
 
@@ -84,11 +78,10 @@ st.title("📦 Validação de Produtos")
 st.subheader("🧑‍💼 Solicitação do Gerente do Depósito")
 st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em 'Enviar para Ajuste'.")
 
-# Ajustei levemente a largura da última coluna para caber o novo botão
 col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 1.5, 1.5, 1, 2, 1.5])
 
 with col1:
-    codigo_input = st.text_input("Código")
+    codigo_input = st.text_input("Código", key="input_gerente_cod")
 
 produto = None
 if codigo_input:
@@ -109,83 +102,128 @@ with col4:
 with col5:
     st.text_input("Qtde Emb", value=str(produto['qtdeemb']) if produto else "", disabled=True)
 with col6:
-    observacao = st.text_input("Observação")
+    observacao = st.text_input("Observação", key="input_gerente_obs")
 with col7:
     st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-    # Botão alterado
     btn_enviar = st.button("Enviar para Ajuste", type="primary", use_container_width=True)
 
-# Lógica do botão do Gerente
+# Lógica: Salva na aba "Gerente" como Pendente
 if btn_enviar:
     if produto:
-        # Ao invés de salvar, ativamos o bloco 2 guardando as informações na sessão
-        st.session_state.aguardando_validacao = True
-        st.session_state.produto_atual = produto
-        st.session_state.obs_gerente = observacao
+        try:
+            linha_gerente = [
+                produto['cod'],
+                produto['descricao'],
+                produto['codbarra'],
+                str(produto['coddum14']),
+                str(produto['qtdeemb']),
+                "", # Coluna QtdeDisplay (vazia)
+                observacao,
+                "Pendente" # Status inicial
+            ]
+            sheet_gerente.append_row(linha_gerente)
+            st.success(f"Solicitação do produto **{produto['cod']}** enviada para a fila do responsável!")
+        except Exception as e:
+            st.error(f"Erro ao salvar solicitação: {e}")
     else:
         st.warning("Busque um produto válido primeiro antes de solicitar.")
 
+st.markdown("---")
 
 # =====================================================================
 # BLOCO 2: VALIDAÇÃO (RESPONSÁVEL PELO AJUSTE)
 # =====================================================================
-if st.session_state.aguardando_validacao:
-    st.markdown("---")
-    st.subheader("✅ Validação do Responsável pelo Ajuste")
-    
-    # Exibe um resumo do que está sendo validado para evitar erros
-    p_atual = st.session_state.produto_atual
-    st.info(f"**Avaliando produto:** {p_atual['cod']} - {p_atual['descricao']} | **Obs Gerente:** {st.session_state.obs_gerente}")
-    
-    col_v1, col_v2 = st.columns([5, 1.5])
-    
-    with col_v1:
-        obs_responsavel = st.text_input("Observação da Validação (Opcional)")
-    with col_v2:
-        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
+st.subheader("✅ Validação do Responsável pelo Ajuste")
 
-    # Lógica do botão do Responsável (AQUI SALVA NO SHEETS)
-    if btn_ajuste_ok:
-        try:
-            # Mescla as duas observações para manter o histórico claro na planilha
-            obs_final = f"Gerente: {st.session_state.obs_gerente}"
+try:
+    # Puxa todos os dados da aba Gerente para encontrar os Pendentes
+    dados_fila = sheet_gerente.get_all_values()
+    
+    pendentes = []
+    # Começamos do índice 2 (start=2) porque a linha 1 é o cabeçalho no Sheets
+    for idx_linha, linha in enumerate(dados_fila[1:], start=2):
+        if len(linha) >= 8 and linha[7] == 'Pendente': # A coluna H (índice 7) é o Status
+            pendentes.append({
+                'row_idx': idx_linha,
+                'Cod': linha[0],
+                'Descricao': linha[1],
+                'CodBarra': linha[2],
+                'CodDum14': linha[3],
+                'QtdeEmb': linha[4],
+                'QtdeDisplay': linha[5],
+                'Observacao': linha[6]
+            })
+
+    if pendentes:
+        st.info(f"Existem **{len(pendentes)}** solicitações aguardando ajuste.")
+        
+        # Cria um dicionário para o Selectbox ficar amigável (Ex: "19 - Cerveja 350ml Skol")
+        opcoes = {p['row_idx']: f"{p['Cod']} - {p['Descricao']}" for p in pendentes}
+        
+        col_v1, col_v2, col_v3 = st.columns([2, 3, 3])
+        
+        with col_v1:
+            selecionado_idx = st.selectbox("Selecione a Solicitação na Fila", options=list(opcoes.keys()), format_func=lambda x: opcoes[x])
+            item_selecionado = next(p for p in pendentes if p['row_idx'] == selecionado_idx)
+            
+        with col_v2:
+            # AQUI: A observação do gerente "sobe" para a tela do responsável ver exatamente o que foi pedido
+            st.text_input("Observação Solicitada (Gerente)", value=item_selecionado['Observacao'], disabled=True)
+            
+        with col_v3:
+            # O responsável pode colocar uma nota dele (opcional)
+            obs_responsavel = st.text_input("Sua Observação da Validação (Opcional)", key="obs_resp")
+            
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            col_v3_1, col_v3_2 = st.columns([2, 1])
+            with col_v3_2:
+                btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
+
+        if btn_ajuste_ok:
+            # 1. Monta a linha final juntando as duas observações
+            obs_final = f"Gerente: {item_selecionado['Observacao']}"
             if obs_responsavel:
                 obs_final += f" | Resp: {obs_responsavel}"
 
-            linha_planilha = [
-                p_atual['cod'],
-                p_atual['descricao'],
-                p_atual['codbarra'],
-                str(p_atual['coddum14']),
-                str(p_atual['qtdeemb']),
-                "", # Coluna QtdeDisplay (vazia)
+            linha_final = [
+                item_selecionado['Cod'],
+                item_selecionado['Descricao'],
+                item_selecionado['CodBarra'],
+                item_selecionado['CodDum14'],
+                item_selecionado['QtdeEmb'],
+                item_selecionado['QtdeDisplay'],
                 obs_final,
-                "OK" # Coluna Status
+                "OK"
             ]
-            salvar_no_sheets(linha_planilha)
-            st.success(f"Ajuste do produto **{p_atual['cod']}** validado e enviado para a planilha com sucesso!")
             
-            # Reseta o estado para esconder o bloco 2 e liberar para a próxima operação
-            st.session_state.aguardando_validacao = False
-            st.session_state.produto_atual = None
-            st.session_state.obs_gerente = ""
+            # 2. Salva na aba "Finalizado"
+            sheet_finalizado.append_row(linha_final)
             
-        except Exception as e:
-            st.error(f"Erro ao salvar na planilha: {e}")
+            # 3. Atualiza o status na aba "Gerente" para "Concluído" (Coluna 8 = H)
+            # Assim ele some da fila de pendentes
+            sheet_gerente.update_cell(selecionado_idx, 8, 'Concluído')
+            
+            st.success(f"Ajuste do produto {item_selecionado['Cod']} finalizado com sucesso!")
+            st.rerun() # Atualiza a tela para remover o item da fila visualmente
+            
+    else:
+        st.success("Nenhuma solicitação pendente no momento! Tudo em dia. 🎉")
+
+except Exception as e:
+    st.error(f"Erro ao processar a fila de validação: {e}")
 
 st.divider()
 
 # =====================================================================
-# BLOCO 3: EXIBIÇÃO DO HISTÓRICO DA PLANILHA
+# BLOCO 3: EXIBIÇÃO DO HISTÓRICO DA PLANILHA (ABA FINALIZADO)
 # =====================================================================
-st.subheader("📋 Registros Salvos (Google Sheets)")
+st.subheader("📋 Registros Validados (Aba 'Finalizado')")
 try:
-    dados_planilha = sheet.get_all_records()
+    dados_planilha = sheet_finalizado.get_all_records()
     if dados_planilha:
         df = pd.DataFrame(dados_planilha)
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum registro encontrado na planilha ainda.")
+        st.info("Nenhum registro finalizado encontrado ainda.")
 except Exception as e:
-    st.error(f"Não foi possível carregar o histórico da planilha. Detalhes: {e}")
+    st.error(f"Não foi possível carregar o histórico finalizado. Detalhes: {e}")

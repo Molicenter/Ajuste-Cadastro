@@ -5,6 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import datetime, timezone, timedelta
+import requests # <-- Importação necessária para o Telegram
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layout="wide")
@@ -13,6 +14,22 @@ st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layou
 def obter_data_hora_atual():
     fuso_br = timezone(timedelta(hours=-3))
     return datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
+
+# --- Função de Notificação via Telegram ---
+def notificar_telegram(mensagem):
+    try:
+        bot_token = st.secrets["telegram"]["token"]
+        chat_id = st.secrets["telegram"]["chat_id"]
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        
+        payload = {
+            "chat_id": chat_id,
+            "text": mensagem,
+            "parse_mode": "HTML"
+        }
+        requests.post(url, data=payload)
+    except Exception as e:
+        st.warning(f"Erro ao enviar notificação no Telegram: {e}")
 
 # --- Conexão com o Banco de Dados (PostgreSQL) ---
 @st.cache_resource
@@ -129,6 +146,16 @@ if btn_enviar:
             ]
             sheet_gerente.append_row(linha_gerente)
             st.success(f"Solicitação do produto **{produto['cod']}** enviada em {data_solicitacao}!")
+            
+            # --- Gatilho do Telegram: Solicitação Enviada ---
+            msg_telegram = (
+                f"📦 <b>NOVA SOLICITAÇÃO DE AJUSTE</b>\n\n"
+                f"<b>Produto:</b> {produto['cod']} - {produto['descricao']}\n"
+                f"<b>Observação:</b> {observacao}\n"
+                f"<b>Enviado em:</b> {data_solicitacao}"
+            )
+            notificar_telegram(msg_telegram)
+            
         except Exception as e:
             st.error(f"Erro ao salvar solicitação: {e}")
     else:
@@ -164,10 +191,8 @@ try:
     if pendentes:
         st.info(f"Existem **{len(pendentes)}** solicitações aguardando ajuste.")
         
-        # Limpei o selectbox, mostrando só o produto
         opcoes = {p['row_idx']: f"{p['Cod']} - {p['Descricao']}" for p in pendentes}
         
-        # Criei 5 colunas para separar bem a data das observações
         col_v1, col_v2, col_v3, col_v4, col_v5 = st.columns([2.5, 2.5, 1.5, 2.5, 1.2])
         
         with col_v1:
@@ -178,7 +203,6 @@ try:
             st.text_input("Observação do Gerente", value=item_selecionado['Observacao'], disabled=True)
             
         with col_v3:
-            # Data isolada aqui
             st.text_input("Enviado em", value=item_selecionado['DataSolicitacao'], disabled=True)
             
         with col_v4:
@@ -191,7 +215,6 @@ try:
         if btn_ajuste_ok:
             data_ajuste = obter_data_hora_atual()
 
-            # Na planilha, continua juntando as duas anotações para o histórico
             obs_final = f"Gerente: {item_selecionado['Observacao']}"
             if obs_responsavel:
                 obs_final += f" | Resp: {obs_responsavel}"
@@ -213,6 +236,15 @@ try:
             sheet_gerente.update_cell(selecionado_idx, 8, 'Concluído')
             
             st.success(f"Ajuste do produto {item_selecionado['Cod']} finalizado em {data_ajuste}!")
+            
+            # --- Gatilho do Telegram: Ajuste Finalizado ---
+            msg_ok = (
+                f"✅ <b>AJUSTE CONCLUÍDO</b>\n\n"
+                f"<b>Produto:</b> {item_selecionado['Cod']} - {item_selecionado['Descricao']}\n"
+                f"<b>Finalizado em:</b> {data_ajuste}"
+            )
+            notificar_telegram(msg_ok)
+            
             st.rerun() 
             
     else:
@@ -231,14 +263,9 @@ try:
     dados_planilha = sheet_finalizado.get_all_values()
     
     if len(dados_planilha) > 1: 
-        # Pega os cabeçalhos da primeira linha
         cabecalhos = dados_planilha[0]
-        
-        # Truque de segurança: se alguma coluna estiver sem título no Sheets, 
-        # dá um nome genérico para o Pandas não travar a tela com erro
         cabecalhos_seguros = [col if col.strip() != "" else f"Coluna_Sem_Nome_{i}" for i, col in enumerate(cabecalhos)]
         
-        # Cria o dataframe com os cabeçalhos seguros
         df = pd.DataFrame(dados_planilha[1:], columns=cabecalhos_seguros)
         st.dataframe(df, use_container_width=True, hide_index=True)
         

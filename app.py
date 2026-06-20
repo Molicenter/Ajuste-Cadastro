@@ -99,7 +99,8 @@ st.title("📦 Validação de Produtos")
 st.subheader("🧑‍💼 Solicitação do Gerente do Depósito")
 st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em 'Enviar para Ajuste'.")
 
-col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 1.5, 1.5, 1, 2, 1.5])
+# Criando as 8 colunas e ajustando as larguras para caber tudo na tela
+col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1, 1.8, 1.5, 1.5, 1, 1, 1.5, 1.2])
 
 with col1:
     codigo_input = st.text_input("Código", key="input_gerente_cod")
@@ -123,10 +124,14 @@ with col4:
 with col5:
     st.text_input("Qtde Emb", value=str(produto['qtdeemb']) if produto else "", disabled=True)
 with col6:
-    observacao = st.text_input("Observação", key="input_gerente_obs")
+    # --- NOVO CAMPO: Qtde Display preenchido manualmente ---
+    qtde_display = st.text_input("Qtde Display", key="input_gerente_qtdedisplay")
 with col7:
+    observacao = st.text_input("Observação", key="input_gerente_obs")
+with col8:
     st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-    btn_enviar = st.button("Enviar para Ajuste", type="primary", use_container_width=True)
+    # Alterei um pouco o texto do botão para acomodar no layout
+    btn_enviar = st.button("Enviar Ajuste", type="primary", use_container_width=True)
 
 if btn_enviar:
     if produto:
@@ -139,7 +144,7 @@ if btn_enviar:
                 produto['codbarra'],
                 str(produto['coddum14']),
                 str(produto['qtdeemb']),
-                "", 
+                qtde_display, # <--- Inserindo a variável recebida no campo manual
                 observacao,
                 "Pendente",
                 data_solicitacao
@@ -151,6 +156,7 @@ if btn_enviar:
             msg_telegram = (
                 f"📦 <b>NOVA SOLICITAÇÃO DE AJUSTE</b>\n\n"
                 f"<b>Produto:</b> {produto['cod']} - {produto['descricao']}\n"
+                f"<b>Qtde Display:</b> {qtde_display}\n" # Aproveitei para colocar o Display na mensagem também
                 f"<b>Observação:</b> {observacao}\n"
                 f"<b>Enviado em:</b> {data_solicitacao}"
             )

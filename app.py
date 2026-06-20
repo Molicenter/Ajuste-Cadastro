@@ -4,7 +4,7 @@ from psycopg2.extras import RealDictCursor
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import datetime, timezone, timedelta # <-- Nova importação para datas
+from datetime import datetime, timezone, timedelta
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layout="wide")
@@ -114,7 +114,7 @@ with col7:
 if btn_enviar:
     if produto:
         try:
-            data_solicitacao = obter_data_hora_atual() # <-- Pega a data e hora do envio
+            data_solicitacao = obter_data_hora_atual() 
             
             linha_gerente = [
                 produto['cod'],
@@ -125,7 +125,7 @@ if btn_enviar:
                 "", 
                 observacao,
                 "Pendente",
-                data_solicitacao # <-- Salva a data na nova coluna da aba Gerente
+                data_solicitacao
             ]
             sheet_gerente.append_row(linha_gerente)
             st.success(f"Solicitação do produto **{produto['cod']}** enviada em {data_solicitacao}!")
@@ -147,8 +147,7 @@ try:
     pendentes = []
     for idx_linha, linha in enumerate(dados_fila[1:], start=2):
         if len(linha) >= 8 and linha[7] == 'Pendente':
-            # Proteção caso a linha antiga não tenha a data ainda
-            data_solic = linha[8] if len(linha) > 8 else "Data não registrada" 
+            data_solic = linha[8] if len(linha) > 8 else "Sem data" 
             
             pendentes.append({
                 'row_idx': idx_linha,
@@ -159,36 +158,40 @@ try:
                 'QtdeEmb': linha[4],
                 'QtdeDisplay': linha[5],
                 'Observacao': linha[6],
-                'DataSolicitacao': data_solic # <-- Puxa a data da planilha
+                'DataSolicitacao': data_solic 
             })
 
     if pendentes:
         st.info(f"Existem **{len(pendentes)}** solicitações aguardando ajuste.")
         
-        opcoes = {p['row_idx']: f"{p['Cod']} - {p['Descricao']} (Pedida em: {p['DataSolicitacao']})" for p in pendentes}
+        # Limpei o selectbox, mostrando só o produto
+        opcoes = {p['row_idx']: f"{p['Cod']} - {p['Descricao']}" for p in pendentes}
         
-        col_v1, col_v2, col_v3 = st.columns([2, 3, 3])
+        # Criei 5 colunas para separar bem a data das observações
+        col_v1, col_v2, col_v3, col_v4, col_v5 = st.columns([2.5, 2.5, 1.5, 2.5, 1.2])
         
         with col_v1:
-            selecionado_idx = st.selectbox("Selecione a Solicitação na Fila", options=list(opcoes.keys()), format_func=lambda x: opcoes[x])
+            selecionado_idx = st.selectbox("Selecione a Solicitação", options=list(opcoes.keys()), format_func=lambda x: opcoes[x])
             item_selecionado = next(p for p in pendentes if p['row_idx'] == selecionado_idx)
             
         with col_v2:
-            # Exibe a observação e a data em que foi feita para o responsável ver
-            info_gerente = f"({item_selecionado['DataSolicitacao']}) {item_selecionado['Observacao']}"
-            st.text_input("Observação Solicitada (Gerente)", value=info_gerente, disabled=True)
+            st.text_input("Observação do Gerente", value=item_selecionado['Observacao'], disabled=True)
             
         with col_v3:
-            obs_responsavel = st.text_input("Sua Observação da Validação (Opcional)", key="obs_resp")
+            # Data isolada aqui
+            st.text_input("Enviado em", value=item_selecionado['DataSolicitacao'], disabled=True)
             
+        with col_v4:
+            obs_responsavel = st.text_input("Sua Observação (Opcional)", key="obs_resp")
+            
+        with col_v5:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-            col_v3_1, col_v3_2 = st.columns([2, 1])
-            with col_v3_2:
-                btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
+            btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
 
         if btn_ajuste_ok:
-            data_ajuste = obter_data_hora_atual() # <-- Pega a data e hora em que o responsável deu OK
+            data_ajuste = obter_data_hora_atual()
 
+            # Na planilha, continua juntando as duas anotações para o histórico
             obs_final = f"Gerente: {item_selecionado['Observacao']}"
             if obs_responsavel:
                 obs_final += f" | Resp: {obs_responsavel}"
@@ -202,8 +205,8 @@ try:
                 item_selecionado['QtdeDisplay'],
                 obs_final,
                 "OK",
-                item_selecionado['DataSolicitacao'], # <-- Repassa a data original
-                data_ajuste                          # <-- Adiciona a data da finalização
+                item_selecionado['DataSolicitacao'],
+                data_ajuste                          
             ]
             
             sheet_finalizado.append_row(linha_final)
@@ -225,11 +228,17 @@ st.divider()
 # =====================================================================
 st.subheader("📋 Registros Validados (Aba 'Finalizado')")
 try:
-    dados_planilha = sheet_finalizado.get_all_records()
-    if dados_planilha:
-        df = pd.DataFrame(dados_planilha)
+    # AQUI CORRIGIMOS O ERRO DE CABEÇALHOS DUPLICADOS/VAZIOS NO PANDAS
+    dados_planilha = sheet_finalizado.get_all_values()
+    
+    if len(dados_planilha) > 1: # Verifica se tem cabeçalho e pelo menos 1 linha de dados
+        # Cria o dataframe manualmente usando a primeira linha como coluna
+        df = pd.DataFrame(dados_planilha[1:], columns=dados_planilha[0])
         st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
+    elif len(dados_planilha) == 1:
         st.info("Nenhum registro finalizado encontrado ainda.")
+    else:
+        st.warning("A aba 'Finalizado' está vazia, adicione os nomes das colunas na linha 1.")
+        
 except Exception as e:
     st.error(f"Não foi possível carregar o histórico finalizado. Detalhes: {e}")

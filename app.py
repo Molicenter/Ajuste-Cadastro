@@ -18,7 +18,7 @@ def obter_data_hora_atual():
 # --- Função de Notificação via Telegram ---
 def notificar_telegram(mensagem):
     try:
-        bot_token = st.secrets["telegram"]["token"]
+        bot_token = st.secrets["telegram"]["bot_token"]
         chat_id = st.secrets["telegram"]["chat_id"]
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         

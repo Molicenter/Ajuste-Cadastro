@@ -6,8 +6,16 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 
 # --- Configuração da Página ---
-# Mudei para "wide" para as 7 colunas caberem perfeitamente na tela
 st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layout="wide")
+
+# --- Variáveis de Estado (Session State) ---
+# Necessário para controlar o fluxo de 2 etapas (Gerente -> Responsável)
+if 'aguardando_validacao' not in st.session_state:
+    st.session_state.aguardando_validacao = False
+if 'produto_atual' not in st.session_state:
+    st.session_state.produto_atual = None
+if 'obs_gerente' not in st.session_state:
+    st.session_state.obs_gerente = ""
 
 # --- Conexão com o Banco de Dados (PostgreSQL) ---
 @st.cache_resource
@@ -69,16 +77,19 @@ def salvar_no_sheets(dados):
 
 # --- Interface do Usuário ---
 st.title("📦 Validação de Produtos")
-st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em OK para salvar.")
 
-# Criação das 7 colunas (os números dentro da lista representam a largura de cada coluna)
-col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2.5, 1.5, 1.5, 1, 2, 1])
+# =====================================================================
+# BLOCO 1: SOLICITAÇÃO (GERENTE DO DEPÓSITO)
+# =====================================================================
+st.subheader("🧑‍💼 Solicitação do Gerente do Depósito")
+st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em 'Enviar para Ajuste'.")
 
-# 1. Coluna do Código (Onde o usuário digita)
+# Ajustei levemente a largura da última coluna para caber o novo botão
+col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 1.5, 1.5, 1, 2, 1.5])
+
 with col1:
     codigo_input = st.text_input("Código")
 
-# Lógica para buscar o produto assim que o código for digitado
 produto = None
 if codigo_input:
     try:
@@ -89,7 +100,6 @@ if codigo_input:
     except ValueError:
         st.error("Digite apenas números.")
 
-# 2 a 5. Colunas preenchidas automaticamente pelo banco (bloqueadas para edição)
 with col2:
     st.text_input("Descrição", value=produto['descricao'] if produto else "", disabled=True)
 with col3:
@@ -98,49 +108,82 @@ with col4:
     st.text_input("DUM 14", value=str(produto['coddum14']) if produto and produto['coddum14'] else "", disabled=True)
 with col5:
     st.text_input("Qtde Emb", value=str(produto['qtdeemb']) if produto else "", disabled=True)
-
-# 6. Coluna de Observação (Onde o usuário digita a alteração)
 with col6:
     observacao = st.text_input("Observação")
-
-# 7. Coluna do Botão OK
 with col7:
-    # Esse markdown empurra o botão um pouco para baixo, para alinhar com as caixas de texto
     st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-    btn_ok = st.button("OK", type="primary", use_container_width=True)
+    # Botão alterado
+    btn_enviar = st.button("Enviar para Ajuste", type="primary", use_container_width=True)
 
-# Lógica do Botão OK
-if btn_ok:
+# Lógica do botão do Gerente
+if btn_enviar:
     if produto:
+        # Ao invés de salvar, ativamos o bloco 2 guardando as informações na sessão
+        st.session_state.aguardando_validacao = True
+        st.session_state.produto_atual = produto
+        st.session_state.obs_gerente = observacao
+    else:
+        st.warning("Busque um produto válido primeiro antes de solicitar.")
+
+
+# =====================================================================
+# BLOCO 2: VALIDAÇÃO (RESPONSÁVEL PELO AJUSTE)
+# =====================================================================
+if st.session_state.aguardando_validacao:
+    st.markdown("---")
+    st.subheader("✅ Validação do Responsável pelo Ajuste")
+    
+    # Exibe um resumo do que está sendo validado para evitar erros
+    p_atual = st.session_state.produto_atual
+    st.info(f"**Avaliando produto:** {p_atual['cod']} - {p_atual['descricao']} | **Obs Gerente:** {st.session_state.obs_gerente}")
+    
+    col_v1, col_v2 = st.columns([5, 1.5])
+    
+    with col_v1:
+        obs_responsavel = st.text_input("Observação da Validação (Opcional)")
+    with col_v2:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
+
+    # Lógica do botão do Responsável (AQUI SALVA NO SHEETS)
+    if btn_ajuste_ok:
         try:
-            # Montando a linha para o Sheets. 
-            # Deixei um espaço em branco "" no meio para pular a coluna "QtdeDisplay" da sua planilha e não desalinhar as colunas.
+            # Mescla as duas observações para manter o histórico claro na planilha
+            obs_final = f"Gerente: {st.session_state.obs_gerente}"
+            if obs_responsavel:
+                obs_final += f" | Resp: {obs_responsavel}"
+
             linha_planilha = [
-                produto['cod'],
-                produto['descricao'],
-                produto['codbarra'],
-                str(produto['coddum14']),
-                str(produto['qtdeemb']),
+                p_atual['cod'],
+                p_atual['descricao'],
+                p_atual['codbarra'],
+                str(p_atual['coddum14']),
+                str(p_atual['qtdeemb']),
                 "", # Coluna QtdeDisplay (vazia)
-                observacao,
+                obs_final,
                 "OK" # Coluna Status
             ]
             salvar_no_sheets(linha_planilha)
-            st.success(f"Registro do produto **{produto['cod']}** salvo na planilha com sucesso!")
+            st.success(f"Ajuste do produto **{p_atual['cod']}** validado e enviado para a planilha com sucesso!")
+            
+            # Reseta o estado para esconder o bloco 2 e liberar para a próxima operação
+            st.session_state.aguardando_validacao = False
+            st.session_state.produto_atual = None
+            st.session_state.obs_gerente = ""
+            
         except Exception as e:
             st.error(f"Erro ao salvar na planilha: {e}")
-    else:
-        st.warning("Busque um produto válido primeiro antes de confirmar.")
 
 st.divider()
 
-# --- Exibição do Histórico da Planilha ---
+# =====================================================================
+# BLOCO 3: EXIBIÇÃO DO HISTÓRICO DA PLANILHA
+# =====================================================================
 st.subheader("📋 Registros Salvos (Google Sheets)")
 try:
     dados_planilha = sheet.get_all_records()
     if dados_planilha:
         df = pd.DataFrame(dados_planilha)
-        # Exibe o dataframe atualizado na tela
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum registro encontrado na planilha ainda.")

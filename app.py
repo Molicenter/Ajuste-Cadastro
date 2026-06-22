@@ -195,17 +195,34 @@ except Exception as e:
 st.divider()
 
 # =====================================================================
-# BLOCO 3: EXPORTAÇÃO
+# BLOCO 3: EXPORTAÇÃO (VERSÃO SEGURA)
 # =====================================================================
 st.subheader("📋 Histórico")
 try:
-    historico = supabase.table("ajustes_cadastro").select("*").eq("status", "Concluído").order("id", desc=True).execute().data
-    if historico: 
+    # Busca os dados
+    resposta_historico = supabase.table("ajustes_cadastro").select("*").eq("status", "Concluído").order("id", desc=True).execute()
+    historico = resposta_historico.data
+    
+    if historico and len(historico) > 0: 
         df = pd.DataFrame(historico)
+        
+        # Cria o Excel em memória
         buffer_hist = io.BytesIO()
         with pd.ExcelWriter(buffer_hist, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        st.download_button("📊 Exportar Histórico para Excel", data=buffer_hist.getvalue(), file_name="historico_ajustes.xlsx")
+            df.to_excel(writer, index=False, sheet_name="Historico")
+        
+        # Botão de download
+        st.download_button(
+            label="📊 Exportar Histórico para Excel",
+            data=buffer_hist.getvalue(),
+            file_name="historico_ajustes.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # Exibe a tabela
         st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum registro finalizado encontrado no histórico.")
+        
 except Exception as e:
-    st.error(f"Erro no histórico: {e}")
+    st.error(f"Erro ao carregar histórico: {e}")

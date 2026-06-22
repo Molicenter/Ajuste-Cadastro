@@ -1,6 +1,6 @@
 streamlit
 psycopg2-binary
-gspread
-google-auth
-pandas
 supabase
+pandas
+openpyxl
+requests

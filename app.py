@@ -1,11 +1,10 @@
 import streamlit as st
 import psycopg2
 from psycopg2.extras import RealDictCursor
-import gspread
-from google.oauth2.service_account import Credentials
+from supabase import create_client, Client
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-import requests # <-- Importação necessária para o Telegram
+import requests 
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Validação de Produtos", page_icon="📦", layout="wide")
@@ -31,7 +30,7 @@ def notificar_telegram(mensagem):
     except Exception as e:
         st.warning(f"Erro ao enviar notificação no Telegram: {e}")
 
-# --- Conexão com o Banco de Dados (PostgreSQL) ---
+# --- Conexão com o Banco de Dados ERP (PostgreSQL) ---
 @st.cache_resource
 def init_postgres():
     db_secrets = st.secrets["connections"]["banco_erp"]
@@ -46,34 +45,24 @@ def init_postgres():
 try:
     conn_pg = init_postgres()
 except Exception as e:
-    st.error(f"Erro ao conectar com o banco de dados PostgreSQL: {e}")
+    st.error(f"Erro ao conectar com o banco de dados PostgreSQL ERP: {e}")
     st.stop()
 
-# --- Conexão com o Google Sheets ---
+# --- NOVA CONEXÃO: SUPABASE ---
 @st.cache_resource
-def init_gsheets():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    credentials = Credentials.from_service_account_info(
-        st.secrets["connections"]["gsheets"],
-        scopes=scopes
-    )
-    client = gspread.authorize(credentials)
-    planilha = client.open("Ajuste_Cadastro")
-    
-    aba_gerente = planilha.worksheet("Gerente")
-    aba_finalizado = planilha.worksheet("Finalizado")
-    return aba_gerente, aba_finalizado
+def init_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
 try:
-    sheet_gerente, sheet_finalizado = init_gsheets()
+    supabase: Client = init_supabase()
 except Exception as e:
-    st.error(f"Erro ao conectar com as abas do Google Sheets: {e}")
+    st.error(f"Erro ao inicializar o Supabase: {e}")
     st.stop()
 
-# --- Funções de Banco ---
+
+# --- Funções de Banco (ERP) ---
 def buscar_produto(codigo):
     with conn_pg.cursor(cursor_factory=RealDictCursor) as cur:
         query = """
@@ -97,9 +86,8 @@ st.title("📦 Validação de Produtos")
 # BLOCO 1: SOLICITAÇÃO (GERENTE DO DEPÓSITO)
 # =====================================================================
 st.subheader("🧑‍💼 Solicitação do Gerente do Depósito")
-st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em 'Enviar para Ajuste'.")
+st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em 'Enviar Ajuste'.")
 
-# Criando as 8 colunas e ajustando as larguras para caber tudo na tela
 col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1, 1.8, 1.5, 1.5, 1, 1, 1.5, 1.2])
 
 with col1:
@@ -124,13 +112,11 @@ with col4:
 with col5:
     st.text_input("Qtde Emb", value=str(produto['qtdeemb']) if produto else "", disabled=True)
 with col6:
-    # --- NOVO CAMPO: Qtde Display preenchido manualmente ---
     qtde_display = st.text_input("Qtde Display", key="input_gerente_qtdedisplay")
 with col7:
     observacao = st.text_input("Observação", key="input_gerente_obs")
 with col8:
     st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-    # Alterei um pouco o texto do botão para acomodar no layout
     btn_enviar = st.button("Enviar Ajuste", type="primary", use_container_width=True)
 
 if btn_enviar:
@@ -138,25 +124,28 @@ if btn_enviar:
         try:
             data_solicitacao = obter_data_hora_atual() 
             
-            linha_gerente = [
-                produto['cod'],
-                produto['descricao'],
-                produto['codbarra'],
-                str(produto['coddum14']),
-                str(produto['qtdeemb']),
-                qtde_display, # <--- Inserindo a variável recebida no campo manual
-                observacao,
-                "Pendente",
-                data_solicitacao
-            ]
-            sheet_gerente.append_row(linha_gerente)
+            # Prepara o dicionário para inserir no Supabase
+            dados_insercao = {
+                "cod": str(produto['cod']),
+                "descricao": produto['descricao'],
+                "codbarra": produto['codbarra'],
+                "coddum14": str(produto['coddum14']) if produto['coddum14'] else "",
+                "qtdeemb": str(produto['qtdeemb']),
+                "qtdedisplay": qtde_display,
+                "observacao_gerente": observacao,
+                "status": "Pendente",
+                "data_solicitacao": data_solicitacao
+            }
+            
+            # Grava no Supabase!
+            supabase.table("ajustes_cadastro").insert(dados_insercao).execute()
+            
             st.success(f"Solicitação do produto **{produto['cod']}** enviada em {data_solicitacao}!")
             
-            # --- Gatilho do Telegram: Solicitação Enviada ---
             msg_telegram = (
                 f"📦 <b>NOVA SOLICITAÇÃO DE AJUSTE</b>\n\n"
                 f"<b>Produto:</b> {produto['cod']} - {produto['descricao']}\n"
-                f"<b>Qtde Display:</b> {qtde_display}\n" # Aproveitei para colocar o Display na mensagem também
+                f"<b>Qtde Display:</b> {qtde_display}\n"
                 f"<b>Observação:</b> {observacao}\n"
                 f"<b>Enviado em:</b> {data_solicitacao}"
             )
@@ -175,41 +164,26 @@ st.markdown("---")
 st.subheader("✅ Validação do Responsável pelo Ajuste")
 
 try:
-    dados_fila = sheet_gerente.get_all_values()
-    
-    pendentes = []
-    for idx_linha, linha in enumerate(dados_fila[1:], start=2):
-        if len(linha) >= 8 and linha[7] == 'Pendente':
-            data_solic = linha[8] if len(linha) > 8 else "Sem data" 
-            
-            pendentes.append({
-                'row_idx': idx_linha,
-                'Cod': linha[0],
-                'Descricao': linha[1],
-                'CodBarra': linha[2],
-                'CodDum14': linha[3],
-                'QtdeEmb': linha[4],
-                'QtdeDisplay': linha[5],
-                'Observacao': linha[6],
-                'DataSolicitacao': data_solic 
-            })
+    # Vai buscar apenas os registos "Pendentes" ao Supabase
+    resposta_pendentes = supabase.table("ajustes_cadastro").select("*").eq("status", "Pendente").execute()
+    pendentes = resposta_pendentes.data
 
     if pendentes:
         st.info(f"Existem **{len(pendentes)}** solicitações aguardando ajuste.")
         
-        opcoes = {p['row_idx']: f"{p['Cod']} - {p['Descricao']}" for p in pendentes}
+        opcoes = {p['id']: f"{p['cod']} - {p['descricao']}" for p in pendentes}
         
         col_v1, col_v2, col_v3, col_v4, col_v5 = st.columns([2.5, 2.5, 1.5, 2.5, 1.2])
         
         with col_v1:
-            selecionado_idx = st.selectbox("Selecione a Solicitação", options=list(opcoes.keys()), format_func=lambda x: opcoes[x])
-            item_selecionado = next(p for p in pendentes if p['row_idx'] == selecionado_idx)
+            selecionado_id = st.selectbox("Selecione a Solicitação", options=list(opcoes.keys()), format_func=lambda x: opcoes[x])
+            item_selecionado = next(p for p in pendentes if p['id'] == selecionado_id)
             
         with col_v2:
-            st.text_input("Observação do Gerente", value=item_selecionado['Observacao'], disabled=True)
+            st.text_input("Observação do Gerente", value=item_selecionado['observacao_gerente'] or "", disabled=True)
             
         with col_v3:
-            st.text_input("Enviado em", value=item_selecionado['DataSolicitacao'], disabled=True)
+            st.text_input("Enviado em", value=item_selecionado['data_solicitacao'] or "", disabled=True)
             
         with col_v4:
             obs_responsavel = st.text_input("Sua Observação (Opcional)", key="obs_resp")
@@ -221,32 +195,21 @@ try:
         if btn_ajuste_ok:
             data_ajuste = obter_data_hora_atual()
 
-            obs_final = f"Gerente: {item_selecionado['Observacao']}"
-            if obs_responsavel:
-                obs_final += f" | Resp: {obs_responsavel}"
-
-            linha_final = [
-                item_selecionado['Cod'],
-                item_selecionado['Descricao'],
-                item_selecionado['CodBarra'],
-                item_selecionado['CodDum14'],
-                item_selecionado['QtdeEmb'],
-                item_selecionado['QtdeDisplay'],
-                obs_final,
-                "OK",
-                item_selecionado['DataSolicitacao'],
-                data_ajuste                          
-            ]
+            # Dados que vamos atualizar no registo específico
+            dados_atualizacao = {
+                "status": "Concluído",
+                "observacao_responsavel": obs_responsavel,
+                "data_ajuste": data_ajuste
+            }
             
-            sheet_finalizado.append_row(linha_final)
-            sheet_gerente.update_cell(selecionado_idx, 8, 'Concluído')
+            # Faz o UPDATE na linha que tem o ID selecionado
+            supabase.table("ajustes_cadastro").update(dados_atualizacao).eq("id", selecionado_id).execute()
             
-            st.success(f"Ajuste do produto {item_selecionado['Cod']} finalizado em {data_ajuste}!")
+            st.success(f"Ajuste do produto {item_selecionado['cod']} finalizado em {data_ajuste}!")
             
-            # --- Gatilho do Telegram: Ajuste Finalizado ---
             msg_ok = (
                 f"✅ <b>AJUSTE CONCLUÍDO</b>\n\n"
-                f"<b>Produto:</b> {item_selecionado['Cod']} - {item_selecionado['Descricao']}\n"
+                f"<b>Produto:</b> {item_selecionado['cod']} - {item_selecionado['descricao']}\n"
                 f"<b>Finalizado em:</b> {data_ajuste}"
             )
             notificar_telegram(msg_ok)
@@ -264,21 +227,35 @@ st.divider()
 # =====================================================================
 # BLOCO 3: EXIBIÇÃO DO HISTÓRICO DA PLANILHA (ABA FINALIZADO)
 # =====================================================================
-st.subheader("📋 Registros Validados (Aba 'Finalizado')")
+st.subheader("📋 Registros Validados (Histórico)")
 try:
-    dados_planilha = sheet_finalizado.get_all_values()
+    # Vai buscar apenas os registos "Concluídos", ordenados pelos mais recentes
+    resposta_concluidos = supabase.table("ajustes_cadastro").select("*").eq("status", "Concluído").order("id", desc=True).execute()
+    historico = resposta_concluidos.data
     
-    if len(dados_planilha) > 1: 
-        cabecalhos = dados_planilha[0]
-        cabecalhos_seguros = [col if col.strip() != "" else f"Coluna_Sem_Nome_{i}" for i, col in enumerate(cabecalhos)]
+    if historico: 
+        # Converter o JSON do Supabase para DataFrame do Pandas para exibir bonita na tela
+        df = pd.DataFrame(historico)
         
-        df = pd.DataFrame(dados_planilha[1:], columns=cabecalhos_seguros)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        # Selecionar e renomear as colunas que importam para a visualização
+        colunas_exibicao = {
+            "cod": "Código", 
+            "descricao": "Descrição", 
+            "codbarra": "Cód. Barra",
+            "coddum14": "DUM 14",
+            "qtdeemb": "Qtde Emb",
+            "qtdedisplay": "Qtde Display",
+            "observacao_gerente": "Obs Gerente",
+            "observacao_responsavel": "Obs Responsável",
+            "data_solicitacao": "Data Solicitação",
+            "data_ajuste": "Data Ajuste"
+        }
         
-    elif len(dados_planilha) == 1:
-        st.info("Nenhum registro finalizado encontrado ainda.")
+        df_visual = df[list(colunas_exibicao.keys())].rename(columns=colunas_exibicao)
+        st.dataframe(df_visual, use_container_width=True, hide_index=True)
+        
     else:
-        st.warning("A aba 'Finalizado' está vazia. Adicione os cabeçalhos na linha 1.")
+        st.info("Nenhum registro finalizado encontrado ainda no histórico.")
         
 except Exception as e:
     st.error(f"Não foi possível carregar o histórico finalizado. Detalhes: {e}")

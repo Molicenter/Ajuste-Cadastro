@@ -16,7 +16,7 @@ def obter_data_hora_atual():
     return datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
 
 # --- Função de Notificação via Telegram ---
-def notificar_telegram(mensagem):
+def notificar_telegram(mensagem): # Parâmetro corrigido
     try:
         bot_token = st.secrets["telegram"]["bot_token"]
         chat_id = st.secrets["telegram"]["chat_id"]
@@ -24,7 +24,7 @@ def notificar_telegram(mensagem):
         
         payload = {
             "chat_id": chat_id,
-            "text": message,
+            "text": mensagem, # Variável corrigida para casar com o parâmetro
             "parse_mode": "HTML"
         }
         requests.post(url, data=payload)
@@ -87,7 +87,6 @@ st.title("📦 Validação de Produtos")
 # BLOCO 1: SOLICITAÇÃO (GERENTE DO DEPÓSITO)
 # =====================================================================
 st.subheader("🧑‍💼 Solicitação do Gerente do Depósito")
-st.markdown("Digite o código para carregar os dados. Preencha a observação e clique em 'Enviar Ajuste'.")
 
 col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1, 1.8, 1.5, 1.5, 1, 1, 1.5, 1.2])
 
@@ -124,7 +123,6 @@ if btn_enviar:
     if produto:
         try:
             data_solicitacao = obter_data_hora_atual() 
-            
             dados_insercao = {
                 "cod": str(produto['cod']),
                 "descricao": produto['descricao'],
@@ -136,24 +134,22 @@ if btn_enviar:
                 "status": "Pendente",
                 "data_solicitacao": data_solicitacao
             }
-            
             supabase.table("ajustes_cadastro").insert(dados_insercao).execute()
-            st.success(f"Solicitação do produto **{produto['cod']}** enviada em {data_solicitacao}!")
+            st.success(f"Solicitação do produto **{produto['cod']}** enviada!")
             
             msg_telegram = (
-                f"📦 <b>NOVA SOLICITAÇÃO DE AJUSTE</b>\n\n"
+                f"📦 <b>NOVA SOLICITAÇÃO</b>\n\n"
                 f"<b>Produto:</b> {produto['cod']} - {produto['descricao']}\n"
                 f"<b>Qtde Display:</b> {qtde_display}\n"
-                f"<b>Observação:</b> {observacao}\n"
-                f"<b>Enviado em:</b> {data_solicitacao}"
+                f"<b>Observação:</b> {observacao}"
             )
             notificar_telegram(msg_telegram)
             st.rerun()
             
         except Exception as e:
-            st.error(f"Erro ao salvar solicitação: {e}")
+            st.error(f"Erro ao salvar: {e}")
     else:
-        st.warning("Busque um produto válido primeiro antes de solicitar.")
+        st.warning("Busque um produto primeiro.")
 
 st.markdown("---")
 
@@ -167,109 +163,49 @@ try:
     pendentes = resposta_pendentes.data
 
     if pendentes:
-        st.info(f"Existem **{len(pendentes)}** solicitações aguardando ajuste.")
         opcoes = {p['id']: f"{p['cod']} - {p['descricao']}" for p in pendentes}
-        
         col_v1, col_v2, col_v3, col_v4, col_v5 = st.columns([2.5, 2.5, 1.5, 2.5, 1.2])
         
         with col_v1:
             selecionado_id = st.selectbox("Selecione a Solicitação", options=list(opcoes.keys()), format_func=lambda x: opcoes[x])
             item_selecionado = next(p for p in pendentes if p['id'] == selecionado_id)
-            
         with col_v2:
-            st.text_input("Observação do Gerente", value=item_selecionado['observacao_gerente'] or "", disabled=True)
+            st.text_input("Obs Gerente", value=item_selecionado['observacao_gerente'] or "", disabled=True)
         with col_v3:
-            st.text_input("Enviado em", value=item_selecionado['data_solicitacao'] or "", disabled=True)
+            st.text_input("Data Solic.", value=item_selecionado['data_solicitacao'] or "", disabled=True)
         with col_v4:
-            obs_responsavel = st.text_input("Sua Observação (Opcional)", key="obs_resp")
+            obs_responsavel = st.text_input("Sua Observação", key="obs_resp")
         with col_v5:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
             btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
 
         if btn_ajuste_ok:
             data_ajuste = obter_data_hora_atual()
-            dados_atualizacao = {
-                "status": "Concluído",
-                "observacao_responsavel": obs_responsavel,
-                "data_ajuste": data_ajuste
-            }
+            supabase.table("ajustes_cadastro").update({"status": "Concluído", "observacao_responsavel": obs_responsavel, "data_ajuste": data_ajuste}).eq("id", selecionado_id).execute()
             
-            supabase.table("ajustes_cadastro").update(dados_atualizacao).eq("id", selecionado_id).execute()
-            st.success(f"Ajuste do produto {item_selecionado['cod']} finalizado em {data_ajuste}!")
-            
-            msg_ok = (
-                f"✅ <b>AJUSTE CONCLUÍDO</b>\n\n"
-                f"<b>Produto:</b> {item_selecionado['cod']} - {item_selecionado['descricao']}\n"
-                f"<b>Finalizado em:</b> {data_ajuste}"
-            )
+            msg_ok = f"✅ <b>AJUSTE CONCLUÍDO</b>\n\n<b>Produto:</b> {item_selecionado['cod']} - {item_selecionado['descricao']}"
             notificar_telegram(msg_ok)
             st.rerun() 
             
     else:
-        st.success("Nenhuma solicitação pendente no momento! Tudo em dia. 🎉")
-
+        st.success("Tudo em dia! 🎉")
 except Exception as e:
-    st.error(f"Erro ao processar a fila de validação: {e}")
+    st.error(f"Erro na fila: {e}")
 
 st.divider()
 
 # =====================================================================
-# BLOCO 3: EXIBIÇÃO E EXPORTAÇÃO DO HISTÓRICO
+# BLOCO 3: EXPORTAÇÃO
 # =====================================================================
-st.subheader("📋 Registros Validados (Histórico)")
+st.subheader("📋 Histórico")
 try:
-    resposta_concluidos = supabase.table("ajustes_cadastro").select("*").eq("status", "Concluído").order("id", desc=True).execute()
-    historico = resposta_concluidos.data
-    
+    historico = supabase.table("ajustes_cadastro").select("*").eq("status", "Concluído").order("id", desc=True).execute().data
     if historico: 
         df = pd.DataFrame(historico)
-        
-        colunas_exibicao = {
-            "cod": "Código", 
-            "descricao": "Descrição", 
-            "codbarra": "Cód. Barra",
-            "coddum14": "DUM 14",
-            "qtdeemb": "Qtde Emb",
-            "qtdedisplay": "Qtde Display",
-            "observacao_gerente": "Obs Gerente",
-            "observacao_responsavel": "Obs Responsável",
-            "data_solicitacao": "Data Solicitação",
-            "data_ajuste": "Data Ajuste"
-        }
-        
-        df_visual = df[list(colunas_exibicao.keys())].rename(columns=colunas_exibicao)
-        
-        # ─── GERAÇÃO DO EXCEL EM MEMÓRIA (Com auto-ajuste) ───
         buffer_hist = io.BytesIO()
         with pd.ExcelWriter(buffer_hist, engine='openpyxl') as writer:
-            df_visual.to_excel(writer, index=False, sheet_name="Historico_Ajustes")
-            worksheet_hist = writer.sheets["Historico_Ajustes"]
-            
-            for idx, col_name in enumerate(df_visual.columns):
-                max_content_len = df_visual[col_name].fillna("").astype(str).str.len().max()
-                max_len = max(max_content_len, len(str(col_name))) + 2
-                col_letter = chr(65 + idx)
-                worksheet_hist.column_dimensions[col_letter].width = max_len
-                
-        excel_data_hist = buffer_hist.getvalue()
-        
-        # Botão de download posicionado logo acima da tabela para ficar bem acessível
-        c_btn, _ = st.columns([3, 7])
-        with c_btn:
-            st.download_button(
-                label="📊 Exportar Histórico para Excel",
-                data=excel_data_hist,
-                file_name="historico_ajustes_cadastro.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="btn_exportar_ajustes"
-            )
-            
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.dataframe(df_visual, use_container_width=True, hide_index=True)
-        
-    else:
-        st.info("Nenhum registro finalizado encontrado ainda no histórico.")
-        
+            df.to_excel(writer, index=False)
+        st.download_button("📊 Exportar Histórico para Excel", data=buffer_hist.getvalue(), file_name="historico_ajustes.xlsx")
+        st.dataframe(df, use_container_width=True, hide_index=True)
 except Exception as e:
-    st.error(f"Não foi possível carregar o histórico finalizado. Detalhes: {e}")
+    st.error(f"Erro no histórico: {e}")

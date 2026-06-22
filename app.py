@@ -3,6 +3,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from supabase import create_client, Client
 import pandas as pd
+import io
 from datetime import datetime, timezone, timedelta
 import requests 
 
@@ -23,7 +24,7 @@ def notificar_telegram(mensagem):
         
         payload = {
             "chat_id": chat_id,
-            "text": mensagem,
+            "text": message,
             "parse_mode": "HTML"
         }
         requests.post(url, data=payload)
@@ -48,7 +49,7 @@ except Exception as e:
     st.error(f"Erro ao conectar com o banco de dados PostgreSQL ERP: {e}")
     st.stop()
 
-# --- NOVA CONEXÃO: SUPABASE ---
+# --- CONEXÃO SUPABASE ---
 @st.cache_resource
 def init_supabase():
     url = st.secrets["SUPABASE_URL"]
@@ -124,7 +125,6 @@ if btn_enviar:
         try:
             data_solicitacao = obter_data_hora_atual() 
             
-            # Prepara o dicionário para inserir no Supabase
             dados_insercao = {
                 "cod": str(produto['cod']),
                 "descricao": produto['descricao'],
@@ -137,9 +137,7 @@ if btn_enviar:
                 "data_solicitacao": data_solicitacao
             }
             
-            # Grava no Supabase!
             supabase.table("ajustes_cadastro").insert(dados_insercao).execute()
-            
             st.success(f"Solicitação do produto **{produto['cod']}** enviada em {data_solicitacao}!")
             
             msg_telegram = (
@@ -150,6 +148,7 @@ if btn_enviar:
                 f"<b>Enviado em:</b> {data_solicitacao}"
             )
             notificar_telegram(msg_telegram)
+            st.rerun()
             
         except Exception as e:
             st.error(f"Erro ao salvar solicitação: {e}")
@@ -164,13 +163,11 @@ st.markdown("---")
 st.subheader("✅ Validação do Responsável pelo Ajuste")
 
 try:
-    # Vai buscar apenas os registos "Pendentes" ao Supabase
     resposta_pendentes = supabase.table("ajustes_cadastro").select("*").eq("status", "Pendente").execute()
     pendentes = resposta_pendentes.data
 
     if pendentes:
         st.info(f"Existem **{len(pendentes)}** solicitações aguardando ajuste.")
-        
         opcoes = {p['id']: f"{p['cod']} - {p['descricao']}" for p in pendentes}
         
         col_v1, col_v2, col_v3, col_v4, col_v5 = st.columns([2.5, 2.5, 1.5, 2.5, 1.2])
@@ -181,30 +178,23 @@ try:
             
         with col_v2:
             st.text_input("Observação do Gerente", value=item_selecionado['observacao_gerente'] or "", disabled=True)
-            
         with col_v3:
             st.text_input("Enviado em", value=item_selecionado['data_solicitacao'] or "", disabled=True)
-            
         with col_v4:
             obs_responsavel = st.text_input("Sua Observação (Opcional)", key="obs_resp")
-            
         with col_v5:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
             btn_ajuste_ok = st.button("Ajuste OK", type="primary", use_container_width=True)
 
         if btn_ajuste_ok:
             data_ajuste = obter_data_hora_atual()
-
-            # Dados que vamos atualizar no registo específico
             dados_atualizacao = {
                 "status": "Concluído",
                 "observacao_responsavel": obs_responsavel,
                 "data_ajuste": data_ajuste
             }
             
-            # Faz o UPDATE na linha que tem o ID selecionado
             supabase.table("ajustes_cadastro").update(dados_atualizacao).eq("id", selecionado_id).execute()
-            
             st.success(f"Ajuste do produto {item_selecionado['cod']} finalizado em {data_ajuste}!")
             
             msg_ok = (
@@ -213,7 +203,6 @@ try:
                 f"<b>Finalizado em:</b> {data_ajuste}"
             )
             notificar_telegram(msg_ok)
-            
             st.rerun() 
             
     else:
@@ -225,19 +214,16 @@ except Exception as e:
 st.divider()
 
 # =====================================================================
-# BLOCO 3: EXIBIÇÃO DO HISTÓRICO DA PLANILHA (ABA FINALIZADO)
+# BLOCO 3: EXIBIÇÃO E EXPORTAÇÃO DO HISTÓRICO
 # =====================================================================
 st.subheader("📋 Registros Validados (Histórico)")
 try:
-    # Vai buscar apenas os registos "Concluídos", ordenados pelos mais recentes
     resposta_concluidos = supabase.table("ajustes_cadastro").select("*").eq("status", "Concluído").order("id", desc=True).execute()
     historico = resposta_concluidos.data
     
     if historico: 
-        # Converter o JSON do Supabase para DataFrame do Pandas para exibir bonita na tela
         df = pd.DataFrame(historico)
         
-        # Selecionar e renomear as colunas que importam para a visualização
         colunas_exibicao = {
             "cod": "Código", 
             "descricao": "Descrição", 
@@ -252,6 +238,34 @@ try:
         }
         
         df_visual = df[list(colunas_exibicao.keys())].rename(columns=colunas_exibicao)
+        
+        # ─── GERAÇÃO DO EXCEL EM MEMÓRIA (Com auto-ajuste) ───
+        buffer_hist = io.BytesIO()
+        with pd.ExcelWriter(buffer_hist, engine='openpyxl') as writer:
+            df_visual.to_excel(writer, index=False, sheet_name="Historico_Ajustes")
+            worksheet_hist = writer.sheets["Historico_Ajustes"]
+            
+            for idx, col_name in enumerate(df_visual.columns):
+                max_content_len = df_visual[col_name].fillna("").astype(str).str.len().max()
+                max_len = max(max_content_len, len(str(col_name))) + 2
+                col_letter = chr(65 + idx)
+                worksheet_hist.column_dimensions[col_letter].width = max_len
+                
+        excel_data_hist = buffer_hist.getvalue()
+        
+        # Botão de download posicionado logo acima da tabela para ficar bem acessível
+        c_btn, _ = st.columns([3, 7])
+        with c_btn:
+            st.download_button(
+                label="📊 Exportar Histórico para Excel",
+                data=excel_data_hist,
+                file_name="historico_ajustes_cadastro.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="btn_exportar_ajustes"
+            )
+            
+        st.markdown("<br>", unsafe_allow_html=True)
         st.dataframe(df_visual, use_container_width=True, hide_index=True)
         
     else:
